@@ -1,0 +1,7 @@
+__pycache__/
+.ties_cache/
+relations.csv
+.venv/
+venv/
+*.pyc
+.DS_Store

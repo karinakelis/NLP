@@ -1,0 +1,6 @@
+spacy>=3.7
+vaderSentiment
+networkx
+matplotlib
+pandas
+streamlit
