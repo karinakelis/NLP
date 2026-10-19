@@ -15,9 +15,9 @@ def run_analysis(text, min_mentions):
 
 
 @st.cache_data
-def make_graph(text, min_mentions, _rel):
-    # "_rel" с подчёркиванием Streamlit не хэширует; ключ кэша — текст + настройка
-    save_graph_png(build_graph(_rel), "graph.png")
+def make_graph(text, min_mentions, max_nodes, top_links, _rel):
+    # "_rel" с подчёркиванием Streamlit не хэширует; ключ кэша — текст + настройки
+    save_graph_png(build_graph(_rel, max_nodes=max_nodes, top_links=top_links), "graph.png")
     return open("graph.png", "rb").read()
 
 
@@ -32,9 +32,12 @@ st.subheader("Characters")
 st.dataframe(chars)
 
 st.subheader("Network")
-st.image(make_graph(text, min_m, rel))
-st.caption("Edge colour = tone (green positive, red negative, grey neutral); "
-           "thickness = how often they appear together.")
+c1, c2 = st.columns(2)
+max_nodes = c1.slider("Characters in the graph", 3, 40, 15)
+top_links = c2.slider("Strongest links per character", 1, 10, 3)
+st.image(make_graph(text, min_m, max_nodes, top_links, rel))
+st.caption("Line colour = relationship type; thickness = how often they appear together; "
+           "dashed = negative tone. Node size = how connected the character is.")
 
 st.subheader("Relationships")
 st.dataframe(rel[["a", "b", "weight", "direct", "type", "tone", "arc"]])

@@ -1,6 +1,7 @@
 spacy>=3.8,<3.9
 vaderSentiment
 networkx
+scipy
 matplotlib
 pandas
 streamlit

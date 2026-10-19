@@ -50,20 +50,33 @@ def parse_chapters(chapters, n_process=1):
 
 # Слова-признаки типа отношений (сравниваем с леммой: "kissed" -> "kiss")
 KEYWORDS = {
-    "family":     {"brother", "sister", "father", "mother", "daughter", "son",
-                   "sibling", "parent", "child", "uncle", "aunt", "cousin",
-                   "family", "grandmother", "grandfather"},
+    # Слова родства (brother, sister…) здесь НЕТ: "his sister" часто говорит о третьем
+    # человеке. Родство берём из явных ролей ("her son Oliver") и общей фамилии.
+    "family":     {"family", "relation", "relative", "kin", "sibling", "siblings",
+                   "sisterly", "brotherly"},
     "romance":    {"kiss", "marry", "love", "lover", "romance", "date",
                    "fiance", "fiancee", "wife", "husband", "propose", "court",
-                   "beloved", "sweetheart", "wed"},
-    "friendship": {"friend", "trust", "comfort", "talk", "help", "visit",
-                   "walk", "laugh", "support", "confide"},
+                   "beloved", "sweetheart", "wed", "engage", "engagement",
+                   "marriage", "wedding", "attachment", "admirer",
+                   "suitor", "proposal", "courtship", "flirt",
+                   "bride", "bridegroom", "caress"},
+    "friendship": {"friend", "friendship", "trust", "comfort", "talk", "help",
+                   "visit", "walk", "laugh", "support", "confide", "companion",
+                   "kindness", "accompany", "share", "neighbour", "neighbor",
+                   "dine", "chat", "play", "ally"},
     "work":       {"boss", "factory", "work", "employ", "employee", "employer",
                    "fire", "hire", "colleague", "office", "owner", "own",
-                   "nurse", "assistant", "servant", "master", "clinic"},
+                   "nurse", "assistant", "servant", "master", "clinic", "maid",
+                   "butler", "clerk", "partner", "business", "tenant",
+                   "landlord", "agent", "lawyer", "client", "pay", "wage",
+                   "salary", "job", "shop", "deliver", "serve", "order",
+                   "command", "officer", "crew", "duty"},
     "conflict":   {"argue", "blame", "threaten", "insult", "attack", "shout",
                    "hate", "enemy", "fight", "accuse", "betray", "rival",
-                   "steal", "quarrel", "mock"},
+                   "steal", "quarrel", "mock", "envy", "resent", "dislike",
+                   "despise", "scorn", "offend", "oppose", "deceive", "cheat",
+                   "liar", "rumour", "rumor", "confront", "dispute", "kill",
+                   "murder", "strike", "curse", "revenge", "jealous"},
 }
 # Фразы из нескольких слов
 PHRASES = {"best friend": "friendship", "best man": "friendship",
@@ -73,10 +86,15 @@ PHRASES = {"best friend": "friendship", "best man": "friendship",
 POSITIVE_VERBS = {"help", "thank", "hug", "kiss", "forgive", "love", "smile",
                   "laugh", "comfort", "trust", "marry", "welcome", "apologize",
                   "respect", "invite", "dance", "praise", "save", "protect",
-                  "visit", "support", "defend", "friend"}
+                  "visit", "support", "defend", "friend", "admire", "kindness",
+                  "affection", "embrace", "please", "delight", "praise",
+                  "comfort", "engage", "marry", "esteem", "cheer"}
 NEGATIVE_VERBS = {"threaten", "accuse", "blame", "attack", "insult", "shout",
                   "argue", "hate", "betray", "fight", "steal", "lie", "fire",
-                  "leave", "abandon", "deny", "mock"}
+                  "leave", "abandon", "deny", "mock", "envy", "resent",
+                  "dislike", "despise", "scorn", "offend", "deceive", "cheat",
+                  "liar", "confront", "kill", "murder", "strike", "curse",
+                  "quarrel", "insult", "cruel", "anger", "angry"}
 
 # Роли: "her son Oliver" -> Оливер — ребёнок Клары
 ROLE = {  # слово -> (нормализованная роль, категория, пол того, кто в этой роли)
@@ -97,8 +115,9 @@ INVERSE = {"child": "parent", "parent": "child", "sibling": "sibling",
            "uncle": "nephew", "aunt": "nephew"}
 
 TITLES_F = ("Mrs.", "Mrs", "Ms.", "Ms", "Miss", "Lady", "Madam")
-TITLES_M = ("Mr.", "Mr", "Sir", "Lord")
-TITLES = TITLES_F + TITLES_M + ("Dr.", "Dr", "Professor", "Captain")
+TITLES_M = ("Mr.", "Mr", "Sir", "Lord", "Captain", "Admiral", "Colonel",
+            "General", "Major", "Uncle")
+TITLES = TITLES_F + TITLES_M + ("Dr.", "Dr", "Professor", "Aunt")
 
 MALE_PRON = {"he", "him", "his", "himself"}
 FEMALE_PRON = {"she", "her", "hers", "herself"}
@@ -140,6 +159,60 @@ def split_chapters(text):
 # =====================================================================
 # ШАГ 2. Персонажи и псевдонимы
 # =====================================================================
+# Слова, которые spaCy часто ошибочно считает именами
+NOT_NAMES = {"God", "Lord", "Heaven", "Heavens", "Sir", "Madam", "Miss", "Mrs",
+             "Mr", "Majesty", "Highness", "Lady", "Ma'am", "Mamma", "Papa",
+             "Christmas", "Sunday", "Monday", "Tuesday", "Wednesday",
+             "Thursday", "Friday", "Saturday", "Oh", "O", "Ah", "Chapter",
+             "I", "Me", "You", "Dear", "Poor", "Yes", "No"}
+# Слова в названиях мест: "Laura Place", "Kellynch Hall"
+PLACE_WORDS = {"Place", "Street", "Hall", "Park", "House", "Lodge", "Square",
+               "Road", "Lane", "Court", "Abbey", "Castle", "Cottage", "Manor",
+               "Church", "Bridge", "River", "Hill", "Town", "City", "Inn"}
+# Предлоги, после которых обычно стоит место: "in Bath", "at Kellynch"
+PLACE_PREPS = {"in", "at", "into", "near", "towards", "toward", "through",
+               "within", "inside", "around", "round", "across"}
+
+
+def load_names():
+    """Списки имён NLTK (Mark Kantrowitz): мужские и женские.
+    Имя, которое есть в обоих списках (Leslie), не используем."""
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "names")
+    try:
+        male = set(open(os.path.join(base, "male.txt"), encoding="utf-8").read().split())
+        female = set(open(os.path.join(base, "female.txt"), encoding="utf-8").read().split())
+    except OSError:
+        return {}
+    out = {n: "M" for n in male - female}
+    out.update({n: "F" for n in female - male})
+    return out
+
+
+NAME_GENDER = load_names()
+
+
+def ent_name(ent):
+    """Чистим имя от мусора spaCy:
+    "A Mrs Smith" -> "Smith", "Elliot as Anne" -> "Elliot", "Mary knew" -> "Mary"."""
+    words = []
+    for tok in ent:
+        if tok.is_punct and words:
+            break                       # "Mr Elliot, Anne" — это два человека
+        w = tok.text.replace("'s", "").replace("’s", "").strip(".,;:!?'\"")
+        if not w:
+            continue
+        if not words and (tok.pos_ == "DET" or w in TITLES or w + "." in TITLES
+                          or w in NOT_NAMES):
+            continue                    # артикль или титул в начале
+        if not w[0].isupper() or tok.pos_ not in ("PROPN", "NOUN", "ADJ"):
+            break                       # дальше уже не имя
+        words.append(w)
+    name = " ".join(words[:3])
+    if len(name) < 2 or name in NOT_NAMES or words[-1] in PLACE_WORDS:
+        return ""
+    return name
+
+
 def clean_name(name):
     for t in sorted(TITLES, key=len, reverse=True):
         name = re.sub(rf"^{re.escape(t)}\s+", "", name)
@@ -151,12 +224,25 @@ def find_aliases(docs):
     for doc in docs:
         for ent in doc.ents:
             if ent.label_ == "PERSON":
-                name = clean_name(ent.text)
-                if name and name[0].isupper() and len(name.split()) <= 3:
+                name = ent_name(ent)
+                if name:
                     counts[name] += 1
 
-    # Объединяем псевдонимы: "Anna" -> "Anna Petrova"
     full_names = [n for n in counts if " " in n]
+
+    # Какой пол у титулов перед фамилией: "Mrs Smith" -> F, "Captain Harville" -> M
+    text = " ".join(d.text for d in docs)
+    title_g = defaultdict(set)
+    for t in TITLES_F + TITLES_M:
+        for m in re.finditer(rf"\b{re.escape(t)}\s+([A-Z]\w+)", text):
+            title_g[m.group(1)].add("F" if t in TITLES_F else "M")
+
+    def same_person(surname, full):
+        """"Mrs Smith" — не "Charles Smith": женский титул + мужское имя = разные люди."""
+        g = NAME_GENDER.get(full.split()[0])
+        return not g or not title_g[surname] or g in title_g[surname]
+
+    # Объединяем псевдонимы: "Anna" -> "Anna Petrova"
     alias = {}
     for name in counts:
         if " " in name:
@@ -164,14 +250,14 @@ def find_aliases(docs):
             continue
         match = [f for f in full_names if f.split()[0] == name]
         if not match:
-            match = [f for f in full_names if f.split()[-1] == name]
+            match = [f for f in full_names if f.split()[-1] == name and same_person(name, f)]
         alias[name] = match[0] if len(match) == 1 else name
 
     # Имя — всегда псевдоним; фамилия — только если она уникальна
     surnames = Counter(f.split()[-1] for f in full_names)
     for f in full_names:
         alias.setdefault(f.split()[0], f)
-        if surnames[f.split()[-1]] == 1:
+        if surnames[f.split()[-1]] == 1 and same_person(f.split()[-1], f):
             alias.setdefault(f.split()[-1], f)
     return alias
 
@@ -193,11 +279,20 @@ def name_of(tok, alias):
 def guess_genders(docs, alias, text):
     votes = defaultdict(Counter)
 
+    # 0) Список имён: Charles — мужское, Anne — женское
+    for c in set(alias.values()):
+        g = NAME_GENDER.get(c.split()[0])
+        if g:
+            votes[c][g] += 6
+
     # 1) Титулы: "Mrs. Hale" -> женщина
     for t in TITLES_F + TITLES_M:
+        g = "F" if t in TITLES_F else "M"
         for m in re.finditer(rf"\b{re.escape(t)}\s+([A-Z]\w+)", text):
-            if m.group(1) in alias:
-                votes[alias[m.group(1)]]["F" if t in TITLES_F else "M"] += 3
+            w = m.group(1)
+            # "Mrs Charles Musgrove" — это жена Чарльза, а не женщина по имени Charles
+            if w in alias and NAME_GENDER.get(w, g) == g:
+                votes[alias[w]][g] += 3
 
     for doc in docs:
         sents = list(doc.sents)
@@ -230,7 +325,7 @@ def guess_genders(docs, alias, text):
 # =====================================================================
 def governing_verb(tok):
     t = tok
-    while t.head is not t and t.pos_ not in ("VERB", "AUX"):
+    while t.head.i != t.i and t.pos_ not in ("VERB", "AUX"):   # .i — номер слова
         t = t.head
     return t
 
@@ -326,7 +421,7 @@ def subjects_of(verb, mention):
         objs = [c for c in verb.head.children if c.dep_ in ("dobj", "dative")]
         if objs and objs[0].i in mention:
             return {mention[objs[0].i]}
-    if not subs and verb.dep_ in ("conj", "xcomp") and verb.head is not verb:
+    if not subs and verb.dep_ in ("conj", "xcomp") and verb.head.i != verb.i:
         return subjects_of(verb.head, mention)
     return subs
 
@@ -394,23 +489,29 @@ def cue_category(cue_forms):
 # =====================================================================
 # ШАГ 6. Тип отношений
 # =====================================================================
-def relation_type(scores):
-    """Порядок важности: семья > романтика > работа/дружба > конфликт.
-    Конфликт — это скорее тон: начальник может ругать сотрудника, но они всё равно коллеги."""
-    if scores["family"] >= 2:
-        return "family"
-    if scores["romance"] >= 2:
-        return "romance"
-    if scores["work"] >= 2 and scores["work"] >= scores["friendship"]:
-        return "work"
-    if scores["friendship"] >= 2 and scores["friendship"] > scores["conflict"]:
-        return "friendship"
-    best = max(("work", "friendship"), key=lambda c: scores[c])
+def relation_type(scores, explicit=None):
+    """1) Явная роль ("her son Oliver", общая фамилия) решает сразу.
+    2) Иначе — категория с наибольшим числом очков (романтика x2). При равенстве порядок:
+       семья > романтика > работа > дружба.
+    3) Конфликт побеждает, только если у него строго больше очков:
+       начальник может ругать сотрудника, но они всё равно коллеги."""
+    order = ["family", "romance", "work", "friendship"]
+    if explicit:
+        return max(order, key=lambda c: (explicit[c], -order.index(c)))
+    # романтические слова встречаются реже дружеских, но значат больше: x2
+    scores = Counter(scores)
+    scores["romance"] *= 2
+    best = max(order, key=lambda c: (scores[c], -order.index(c)))
+    if scores["conflict"] > scores[best]:
+        return "conflict"
+    if scores[best] >= 2:
+        return best
     if scores["conflict"] > 0:
         return "conflict"
     if scores[best] > 0:
         return best
-    return "unknown"
+    # общаются, но слов-признаков нет: просто знакомые
+    return "acquaintance"
 
 
 # =====================================================================
@@ -449,17 +550,28 @@ def analyze(text, min_mentions=2, n_process=1):
             if c and not (tok.dep_ == "compound" and name_of(tok.head, alias) == c):
                 mentions[c] += 1
     characters = {n for n, c in mentions.items() if c >= min_mentions}
+
+    # Места: "in Bath", "at Kellynch" — если имя часто стоит после таких предлогов
+    after_prep = Counter()
+    for doc in docs:
+        for tok in doc:
+            c = name_of(tok, alias)
+            if c and ((tok.dep_ == "pobj" and tok.head.lower_ in PLACE_PREPS)
+                      or (tok.dep_ == "compound" and tok.head.text in PLACE_WORDS)):
+                after_prep[c] += 1     # "in Bath", "Kellynch Hall"
+    characters = {c for c in characters if after_prep[c] < 0.3 * mentions[c]}
     gender = guess_genders(docs, alias, text)
 
     role_map, explicit = {}, []
     pair = defaultdict(lambda: {"by_ch": defaultdict(list), "scores": Counter(),
-                                "direct": 0, "evidence": []})
+                                "explicit": Counter(), "direct": 0, "evidence": []})
 
     for ch_i, doc in enumerate(docs, start=1):
         n_explicit = len(explicit)
         mention = resolve_mentions(doc, alias, gender, characters, role_map, explicit)
         for a, b, cat in explicit[n_explicit:]:        # явные роли: +5
             pair[tuple(sorted((a, b)))]["scores"][cat] += 5
+            pair[tuple(sorted((a, b)))]["explicit"][cat] += 1
             pair[tuple(sorted((a, b)))]["direct"] += 1
 
         for sent in doc.sents:
@@ -491,6 +603,13 @@ def analyze(text, min_mentions=2, n_process=1):
                 p["by_ch"][ch_i].append(0.5 * vader_score + 0.5 * pol)
                 p["direct"] += len(my_acts)
 
+    # Общая фамилия: "Anne Elliot" и "Walter Elliot" — скорее всего семья
+    for (a, b), p in pair.items():
+        # ("Louisa Musgrove" и "Musgrove" — родители, тоже считаем)
+        if (" " in a or " " in b) and a.split()[-1] == b.split()[-1]:
+            p["scores"]["family"] += 3
+            p["explicit"]["family"] += 1
+
     rows = []
     for (a, b), p in pair.items():
         weight = sum(len(v) for v in p["by_ch"].values())
@@ -504,7 +623,7 @@ def analyze(text, min_mentions=2, n_process=1):
             "a": a, "b": b,
             "weight": weight,
             "direct": p["direct"],
-            "type": relation_type(p["scores"]),
+            "type": relation_type(p["scores"], p["explicit"]),
             "tone": tone_label(t),
             "tone_score": round(t, 2),
             "arc": " → ".join(f"Ch{ch}:{lab}" for ch, lab in arc.items()),
@@ -539,10 +658,27 @@ def describe(row):
 # =====================================================================
 # ШАГ 9. Граф
 # =====================================================================
-def build_graph(rel):
+TYPE_COLORS = {"family": "#1f77b4", "romance": "#d6336c", "friendship": "#2b9348",
+               "work": "#f08c00", "conflict": "#c92a2a", "acquaintance": "#adb5bd"}
+
+
+def build_graph(rel, max_nodes=15, top_links=3, min_weight=1):
+    """Граф для картинки. В книге десятки персонажей и сотни связей, поэтому:
+    - только max_nodes главных персонажей (по силе связей);
+    - у каждого — только top_links самых сильных связей ("скелет" сети)."""
     G = nx.Graph()
     for _, r in rel.iterrows():
-        G.add_edge(r["a"], r["b"], weight=r["weight"], type=r["type"], tone=r["tone"])
+        if r["weight"] >= min_weight:
+            G.add_edge(r["a"], r["b"], weight=r["weight"], type=r["type"], tone=r["tone"])
+    strength = dict(G.degree(weight="weight"))
+    top = sorted(strength, key=strength.get, reverse=True)[:max_nodes]
+    G = G.subgraph(top).copy()
+    keep = set()
+    for v in G:
+        best = sorted(G.edges(v, data="weight"), key=lambda e: e[2], reverse=True)[:top_links]
+        keep |= {tuple(sorted((a, b))) for a, b, _ in best}
+    G.remove_edges_from([e for e in list(G.edges) if tuple(sorted(e)) not in keep])
+    nx.set_node_attributes(G, {n: strength[n] for n in G}, "strength")
     return G
 
 
@@ -550,20 +686,42 @@ def save_graph_png(G, path="graph.png"):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    colors = {"positive": "#2e7d32", "negative": "#c62828", "neutral": "#9e9e9e"}
-    pos = nx.spring_layout(G, seed=42)
-    plt.figure(figsize=(8, 6))
-    nx.draw_networkx_nodes(G, pos, node_color="#ffd54f", node_size=1800)
-    nx.draw_networkx_labels(G, pos, font_size=9)
+    from matplotlib.lines import Line2D
+    n = max(len(G), 1)
+    size = 8 + n * 0.35                       # больше персонажей — больше картинка
+    fig = plt.figure(figsize=(size, size * 0.72))
+    if len(G) == 0:
+        plt.axis("off"); plt.savefig(path, dpi=130); plt.close(fig); return
+    # Kamada-Kawai раскладывает узлы равномерно (меньше слипания, чем spring)
+    try:
+        pos = nx.kamada_kawai_layout(G)
+    except Exception:
+        pos = nx.spring_layout(G, seed=42, k=3 / n ** 0.5, iterations=200)
+    max_w = max((d["weight"] for *_, d in G.edges(data=True)), default=1)
     for u, v, d in G.edges(data=True):
-        nx.draw_networkx_edges(G, pos, edgelist=[(u, v)], width=1 + min(d["weight"], 8),
-                               edge_color=colors[d["tone"]])
-    nx.draw_networkx_edge_labels(G, pos, edge_labels={(u, v): d["type"]
-                                 for u, v, d in G.edges(data=True)}, font_size=8)
+        nx.draw_networkx_edges(G, pos, edgelist=[(u, v)], alpha=0.8,
+                               width=1.5 + 7 * d["weight"] / max_w,
+                               edge_color=TYPE_COLORS.get(d["type"], "#adb5bd"),
+                               style="dashed" if d["tone"] == "negative" else "solid")
+    strength = nx.get_node_attributes(G, "strength")
+    max_s = max(strength.values()) or 1
+    nx.draw_networkx_nodes(G, pos, node_color="#ffe066", edgecolors="#5c4033",
+                           linewidths=1.2,
+                           node_size=[500 + 2500 * strength[v] / max_s for v in G])
+    nx.draw_networkx_labels(
+        G, pos, font_size=10, font_weight="bold",
+        bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="none", alpha=0.75))
+    used = sorted({d["type"] for *_, d in G.edges(data=True)})
+    handles = [Line2D([0], [0], color=TYPE_COLORS[t], lw=4, label=t) for t in used]
+    handles.append(Line2D([0], [0], color="#555", lw=2, ls="--", label="negative tone"))
+    # легенда под графом, чтобы не закрывала узлы
+    plt.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.01),
+               ncol=min(len(handles), 7), frameon=False, fontsize=10)
     plt.axis("off")
+    plt.margins(0.1)
     plt.tight_layout()
-    plt.savefig(path, dpi=150)
-    plt.close()
+    plt.savefig(path, dpi=130)
+    plt.close(fig)
 
 
 if __name__ == "__main__":
