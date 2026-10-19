@@ -122,6 +122,16 @@ py -m streamlit run app.py                      # веб-интерфейс
 3. **Проверка на настоящей книге:** разметить 1–2 главы Pride and Prejudice с Gutenberg в новом gold-файле и **не подгонять правила под него**.
 4. Future work: fastcoref для местоимений, обучение Logistic Regression на датасете Massey et al. (2015).
 
+## Один персонаж под разными именами
+Пример: в «Графе Монте-Кристо» Эдмон Дантес = граф Монте-Кристо = аббат Бузони. Что программа делает сама:
+- **Титулы** (M., Monsieur, Madame, Mademoiselle, Abbé, Count, Baron, Signor…) убираются из имени;
+- **«Dantès» → «Edmond Dantès»:** короткое имя относится к варианту, который встречается в 3+ раза чаще остальных (а не к отцу, Louis Dantès);
+- **«the count» → Monte Cristo:** титул без имени относится к персонажу, которого чаще всего так называют («Count of Monte Cristo»). Так же работает «the captain», «the admiral».
+
+**Тайную личность правила знать не могут: это сюжет.** Поэтому на сайте есть поле **«Same person»**: `Edmond Dantès = Monte Cristo = Busoni`. В коде — `analyze(text, same_people="A = B; C = D")`. После объединения главный герой Монте-Кристо получает ~3600 упоминаний и оказывается в центре графа.
+
+**Что ещё ошибается на этой книге:** «Villefort wants to **marry** Valentine to Franz» (выдать замуж) считается романтикой между отцом и дочерью; Danglars склеивается с Madame Danglars. Это ограничения правил на словах.
+
 ## Источники данных
 - Список имён: NLTK Names Corpus, © 1991 Mark Kantrowitz (лицензия в `data/names/README`).
 

@@ -114,9 +114,16 @@ INVERSE = {"child": "parent", "parent": "child", "sibling": "sibling",
            "colleague": "colleague", "cousin": "cousin",
            "uncle": "nephew", "aunt": "nephew"}
 
-TITLES_F = ("Mrs.", "Mrs", "Ms.", "Ms", "Miss", "Lady", "Madam")
+TITLES_F = ("Mrs.", "Mrs", "Ms.", "Ms", "Miss", "Lady", "Madam",
+            # французские, итальянские и др. (Дюма, Толстой в переводе…)
+            "Madame", "Mme.", "Mme", "Mademoiselle", "Mlle.", "Mlle", "Signora",
+            "Señora", "Baroness", "Countess", "Comtesse", "Marquise", "Duchess",
+            "Princess", "Frau", "Dame")
 TITLES_M = ("Mr.", "Mr", "Sir", "Lord", "Captain", "Admiral", "Colonel",
-            "General", "Major", "Uncle")
+            "General", "Major", "Uncle",
+            "M.", "Monsieur", "Signor", "Señor", "Don", "Baron", "Count",
+            "Comte", "Marquis", "Viscount", "Vicomte", "Duke", "Prince",
+            "Abbé", "Abbe", "Herr")
 TITLES = TITLES_F + TITLES_M + ("Dr.", "Dr", "Professor", "Aunt")
 
 MALE_PRON = {"he", "him", "his", "himself"}
@@ -164,7 +171,14 @@ NOT_NAMES = {"God", "Lord", "Heaven", "Heavens", "Sir", "Madam", "Miss", "Mrs",
              "Mr", "Majesty", "Highness", "Lady", "Ma'am", "Mamma", "Papa",
              "Christmas", "Sunday", "Monday", "Tuesday", "Wednesday",
              "Thursday", "Friday", "Saturday", "Oh", "O", "Ah", "Chapter",
-             "I", "Me", "You", "Dear", "Poor", "Yes", "No"}
+             "I", "Me", "You", "Dear", "Poor", "Yes", "No", "Monsieur",
+             "Madame", "Mademoiselle", "Signor", "Count", "Baron", "Abbé",
+             "Saint", "Excellency", "Rue", "Château", "Chateau"}
+# Первое слово названий мест: "Rue de Rivoli", "Château d'If"
+PLACE_START = {"Rue", "Château", "Chateau", "Hôtel", "Hotel", "Isle", "Île",
+               "Port", "Mount", "Fort", "Boulevard", "Avenue", "Pont", "Lake",
+               "Cape", "Gulf", "Bay", "Faubourg", "Quai", "Palais", "Via", "Piazza",
+               "Barrière", "Barriere", "Pointe", "Champs"}
 # Слова в названиях мест: "Laura Place", "Kellynch Hall"
 PLACE_WORDS = {"Place", "Street", "Hall", "Park", "House", "Lodge", "Square",
                "Road", "Lane", "Court", "Abbey", "Castle", "Cottage", "Manor",
@@ -191,6 +205,14 @@ def load_names():
 NAME_GENDER = load_names()
 
 
+def name_gender(first):
+    """Пол по имени; "Mercédès" ищем как "Mercedes"."""
+    import unicodedata
+    plain = "".join(ch for ch in unicodedata.normalize("NFD", first)
+                    if unicodedata.category(ch) != "Mn")
+    return NAME_GENDER.get(first) or NAME_GENDER.get(plain)
+
+
 def ent_name(ent):
     """Чистим имя от мусора spaCy:
     "A Mrs Smith" -> "Smith", "Elliot as Anne" -> "Elliot", "Mary knew" -> "Mary"."""
@@ -208,7 +230,8 @@ def ent_name(ent):
             break                       # дальше уже не имя
         words.append(w)
     name = " ".join(words[:3])
-    if len(name) < 2 or name in NOT_NAMES or words[-1] in PLACE_WORDS:
+    if len(name) < 2 or name in NOT_NAMES or words[-1] in PLACE_WORDS \
+            or words[0] in PLACE_START or (len(words) > 1 and words[-1] == "Saint"):
         return ""
     return name
 
@@ -221,12 +244,21 @@ def clean_name(name):
 
 def find_aliases(docs):
     counts = Counter()
+    as_person, as_place = Counter(), Counter()
     for doc in docs:
         for ent in doc.ents:
             if ent.label_ == "PERSON":
                 name = ent_name(ent)
                 if name:
                     counts[name] += 1
+                    as_person.update(name.split())
+            elif ent.label_ in ("GPE", "LOC", "FAC"):
+                as_place.update(t.text for t in ent)
+    # Слово, которое spaCy намного чаще называет местом, чем человеком (Marseilles, Elba).
+    # Порог x3: spaCy иногда путается ("the King" в «Алисе» бывает LOC).
+    for name in list(counts):
+        if all(as_place[w] > 3 * as_person[w] for w in name.split()):
+            del counts[name]
 
     full_names = [n for n in counts if " " in n]
 
@@ -239,8 +271,19 @@ def find_aliases(docs):
 
     def same_person(surname, full):
         """"Mrs Smith" — не "Charles Smith": женский титул + мужское имя = разные люди."""
-        g = NAME_GENDER.get(full.split()[0])
+        g = name_gender(full.split()[0])
         return not g or not title_g[surname] or g in title_g[surname]
+
+    def pick(match):
+        """Один вариант — берём его. Несколько — берём тот, что встречается
+        хотя бы в 3 раза чаще остальных ("Dantès": Edmond Dantès, а не его отец)."""
+        if len(match) == 1:
+            return match[0]
+        if match:
+            top = sorted(match, key=counts.get, reverse=True)
+            if counts[top[0]] >= 3 * counts[top[1]]:
+                return top[0]
+        return None
 
     # Объединяем псевдонимы: "Anna" -> "Anna Petrova"
     alias = {}
@@ -248,18 +291,77 @@ def find_aliases(docs):
         if " " in name:
             alias[name] = name
             continue
-        match = [f for f in full_names if f.split()[0] == name]
-        if not match:
-            match = [f for f in full_names if f.split()[-1] == name and same_person(name, f)]
-        alias[name] = match[0] if len(match) == 1 else name
+        best = pick([f for f in full_names if f.split()[0] == name])
+        if best is None:
+            best = pick([f for f in full_names
+                         if f.split()[-1] == name and same_person(name, f)])
+        alias[name] = best or name
 
-    # Имя — всегда псевдоним; фамилия — только если она уникальна
-    surnames = Counter(f.split()[-1] for f in full_names)
-    for f in full_names:
-        alias.setdefault(f.split()[0], f)
-        if surnames[f.split()[-1]] == 1 and same_person(f.split()[-1], f):
-            alias.setdefault(f.split()[-1], f)
+    # Части полных имён тоже становятся псевдонимами
+    for part in {f.split()[0] for f in full_names} | {f.split()[-1] for f in full_names}:
+        if part in alias:
+            continue
+        best = pick([f for f in full_names if f.split()[0] == part])
+        if best is None:
+            best = pick([f for f in full_names
+                         if f.split()[-1] == part and same_person(part, f)])
+        if best:
+            alias[part] = best
     return alias
+
+
+def strip_accents(s):
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", s)
+                   if unicodedata.category(c) != "Mn").lower().strip()
+
+
+def merge_same_people(alias, groups):
+    """Ручное объединение: [["Edmond Dantès", "Monte Cristo"]] — один человек.
+    Так бывает с тайными личностями: правила не могут знать сюжет."""
+    for group in groups or []:
+        names = {strip_accents(n) for n in group if n.strip()}
+        # все варианты из текста, которые совпадают с одним из введённых имён
+        targets = {v for k, v in alias.items()
+                   if strip_accents(k) in names or strip_accents(v) in names}
+        if not targets:
+            continue
+        # главное имя — первое введённое, если оно есть в тексте
+        first = strip_accents(group[0])
+        main = next((v for v in targets if strip_accents(v) == first),
+                    max(targets, key=len))
+        for k, v in alias.items():
+            if v in targets:
+                alias[k] = main
+    return alias
+
+
+# "the count" -> персонаж, которого чаще всего называют "Count …" / "Count of …"
+REF_TITLES = {"count", "countess", "baron", "baroness", "abbé", "abbe", "marquis",
+              "marquise", "viscount", "duke", "duchess", "prince", "princess",
+              "captain", "admiral", "colonel", "major", "general", "doctor",
+              "judge", "inspector", "professor"}
+
+
+def title_references(docs, alias, characters):
+    seen = defaultdict(Counter)
+    for doc in docs:
+        for tok in doc:
+            low = tok.lower_
+            if low not in REF_TITLES or tok.i + 1 >= len(doc):
+                continue
+            nxt = doc[tok.i + 1]
+            if nxt.lower_ == "of" and tok.i + 2 < len(doc):
+                nxt = doc[tok.i + 2]
+            c = name_of(nxt, alias)
+            if c in characters:
+                seen[low][c] += 1
+    ref = {}
+    for t, cnt in seen.items():
+        (top, n), total = cnt.most_common(1)[0], sum(cnt.values())
+        if n >= 3 and n >= 0.6 * total:   # явный лидер
+            ref[t] = top
+    return ref
 
 
 def name_of(tok, alias):
@@ -281,18 +383,24 @@ def guess_genders(docs, alias, text):
 
     # 0) Список имён: Charles — мужское, Anne — женское
     for c in set(alias.values()):
-        g = NAME_GENDER.get(c.split()[0])
+        g = name_gender(c.split()[0])
         if g:
             votes[c][g] += 6
+
+    titled = defaultdict(set)   # пол титулов персонажа ("Lady Russell" -> {F})
 
     # 1) Титулы: "Mrs. Hale" -> женщина
     for t in TITLES_F + TITLES_M:
         g = "F" if t in TITLES_F else "M"
-        for m in re.finditer(rf"\b{re.escape(t)}\s+([A-Z]\w+)", text):
+        for m in re.finditer(rf"\b{re.escape(t)}\s+([A-Z]\w+)( [A-Z]\w+)?", text):
             w = m.group(1)
-            # "Mrs Charles Musgrove" — это жена Чарльза, а не женщина по имени Charles
-            if w in alias and NAME_GENDER.get(w, g) == g:
+            # "Mrs Charles Musgrove" — жена Чарльза, а не женщина по имени Charles.
+            # Но "Lady Russell" — Russell тут фамилия, титул верный.
+            if m.group(2) and (name_gender(w) or g) != g:
+                continue
+            if w in alias:
                 votes[alias[w]][g] += 3
+                titled[alias[w]].add(g)
 
     for doc in docs:
         sents = list(doc.sents)
@@ -317,7 +425,20 @@ def guess_genders(docs, alias, text):
                         votes[subj[0]]["M"] += 1
                     elif nxt[0] == "she":
                         votes[subj[0]]["F"] += 1
-    return {c: v.most_common(1)[0][0] for c, v in votes.items()}
+    # Если имя есть в списке имён — он решает (надёжнее догадок по местоимениям)
+    out = {c: v.most_common(1)[0][0] for c, v in votes.items()}
+    # Исключение: "Lady Russell" — Russell тут фамилия (не стоит перед другой
+    # фамилией, как "Charles Musgrove"), и титул говорит обратное -> верим титулу.
+    first_names = {v.split()[0] for v in alias.values() if " " in v}
+    for c in set(alias.values()):
+        g = name_gender(c.split()[0])
+        if not g:
+            continue
+        surname_like = " " not in c and c not in first_names
+        if surname_like and titled[c] and g not in titled[c]:
+            continue
+        out[c] = g
+    return out
 
 
 # =====================================================================
@@ -330,7 +451,7 @@ def governing_verb(tok):
     return t
 
 
-def resolve_mentions(doc, alias, gender, characters, role_map, explicit):
+def resolve_mentions(doc, alias, gender, characters, role_map, explicit, title_ref=None):
     """Возвращает {номер слова: персонаж} для имён, местоимений и ролей.
     Местоимение = самый недавний персонаж того же пола (в этом или прошлом предложении)."""
     mention = {}
@@ -341,6 +462,12 @@ def resolve_mentions(doc, alias, gender, characters, role_map, explicit):
             if c and c not in characters:
                 c = None
             low = tok.lower_
+
+            # --- "the count" -> Monte Cristo ---
+            if c is None and title_ref and low in title_ref and tok.i > 0 \
+                    and doc[tok.i - 1].lower_ == "the" \
+                    and not (tok.i + 1 < len(doc) and doc[tok.i + 1].lower_ == "of"):
+                c = title_ref[low]
 
             # --- местоимение ---
             if c is None and (low in MALE_PRON or low in FEMALE_PRON) \
@@ -459,7 +586,13 @@ def interactions(sent, mention):
             prep = next((a for a in t.ancestors if a.dep_ == "prep"), None)
             if prep is not None and prep in tok_set and prep.lower_ in SKIP_PREPS:
                 continue
-            cues.append(forms(t))
+            f = forms(t)
+            # Романтика — только сам глагол ("loved", "kissed") или роль ("her lover").
+            # "arranged Valentine's marriage" — это не роман между ними.
+            if f & KEYWORDS["romance"] and t.dep_ not in ("attr", "appos", "oprd", "acomp") \
+                    and not (t.lower_ == "love" and t.head.lower_ == "in"):
+                continue
+            cues.append(f)
         text = " ".join(t.lower_ for t in toks)
         cues += [{p} for p in PHRASES if p in text]
         negated = any(c.dep_ == "neg" or c.lower_ == "never" for c in verb.children)
@@ -536,11 +669,16 @@ def tone_label(score):
 # =====================================================================
 # ГЛАВНАЯ ФУНКЦИЯ
 # =====================================================================
-def analyze(text, min_mentions=2, n_process=1):
+def analyze(text, min_mentions=2, n_process=1, same_people=None):
+    """same_people — один человек под разными именами, например
+    [["Edmond Dantès", "Monte Cristo"]]. Можно передать строку "A = B; C = D"."""
     chapters = split_chapters(text)
     nlp.max_length = max(nlp.max_length, max(len(c) for c in chapters) + 1)
     docs = parse_chapters(chapters, n_process)
     alias = find_aliases(docs)
+    if isinstance(same_people, str):
+        same_people = [g.split("=") for g in re.split(r"[;\n]", same_people) if "=" in g]
+    alias = merge_same_people(alias, same_people)
 
     # сколько раз названо по имени
     mentions = Counter()
@@ -560,6 +698,13 @@ def analyze(text, min_mentions=2, n_process=1):
                       or (tok.dep_ == "compound" and tok.head.text in PLACE_WORDS)):
                 after_prep[c] += 1     # "in Bath", "Kellynch Hall"
     characters = {c for c in characters if after_prep[c] < 0.3 * mentions[c]}
+
+    # "the count" (без имени) тоже считается упоминанием
+    title_ref = title_references(docs, alias, characters)
+    for doc in docs:
+        for tok in doc:
+            if tok.lower_ in title_ref and tok.i > 0 and doc[tok.i - 1].lower_ == "the":
+                mentions[title_ref[tok.lower_]] += 1
     gender = guess_genders(docs, alias, text)
 
     role_map, explicit = {}, []
@@ -568,7 +713,8 @@ def analyze(text, min_mentions=2, n_process=1):
 
     for ch_i, doc in enumerate(docs, start=1):
         n_explicit = len(explicit)
-        mention = resolve_mentions(doc, alias, gender, characters, role_map, explicit)
+        mention = resolve_mentions(doc, alias, gender, characters, role_map, explicit,
+                                   title_ref)
         for a, b, cat in explicit[n_explicit:]:        # явные роли: +5
             pair[tuple(sorted((a, b)))]["scores"][cat] += 5
             pair[tuple(sorted((a, b)))]["explicit"][cat] += 1
